@@ -16,11 +16,25 @@ if (typeof window !== 'undefined' && !posthog.__loaded) {
     loaded: (ph) => {
       console.log('PostHog initialized ✓');
     },
-    // Disable in development if CORS issues persist
     disable_session_recording: true,
     disable_surveys: true,
   });
 }
+
+// AI Evaluation Weights
+const WEIGHTS = {
+  meta_win: 10000,
+  meta_two_in_row: 500,
+  meta_center: 200,
+  meta_corner: 100,
+  local_win: 150,
+  local_two_in_row: 20,
+  local_center: 8,
+  local_corner: 5,
+  send_to_won_board: 80,
+  send_to_losing_board: -60,
+  block_opponent_meta: 400
+};
 
 const UltimateTicTacToe = () => {
   const [boards, setBoards] = useState(Array(9).fill(null).map(() => Array(9).fill(null)));
@@ -38,6 +52,7 @@ const UltimateTicTacToe = () => {
   const [rickRollStartTime, setRickRollStartTime] = useState(null);
   const [sessionStartTime] = useState(Date.now());
   const [gamesPlayed, setGamesPlayed] = useState(0);
+  const [aiMistakeRate, setAiMistakeRate] = useState(0.10);
 
   const winCombos = [
     [0, 1, 2], [3, 4, 5], [6, 7, 8],
@@ -45,20 +60,261 @@ const UltimateTicTacToe = () => {
     [0, 4, 8], [2, 4, 6]
   ];
 
+  // Check if a board has a winner
+  const checkWinner = (board) => {
+    for (let combo of winCombos) {
+      const [a, b, c] = combo;
+      if (board[a] && board[a] === board[b] && board[a] === board[c]) {
+        return board[a];
+      }
+    }
+    if (board.every(cell => cell !== null)) return 'draw';
+    return null;
+  };
+
+  // Count two-in-a-rows with empty third cell
+  const countTwoInRows = (board, player) => {
+    let count = 0;
+    for (let combo of winCombos) {
+      const [a, b, c] = combo;
+      const cells = [board[a], board[b], board[c]];
+      const playerCells = cells.filter(cell => cell === player).length;
+      const emptyCells = cells.filter(cell => cell === null).length;
+      if (playerCells === 2 && emptyCells === 1) count++;
+    }
+    return count;
+  };
+
+  // Evaluate local board position
+  const evaluateLocalBoard = (board, player) => {
+    const opponent = player === 'X' ? 'O' : 'X';
+    let score = 0;
+
+    // Check if won
+    const winner = checkWinner(board);
+    if (winner === player) return WEIGHTS.local_win;
+    if (winner === opponent) return -WEIGHTS.local_win;
+    if (winner === 'draw') return 0;
+
+    // Two in a rows
+    score += countTwoInRows(board, player) * WEIGHTS.local_two_in_row;
+    score -= countTwoInRows(board, opponent) * WEIGHTS.local_two_in_row;
+
+    // Center control
+    if (board[4] === player) score += WEIGHTS.local_center;
+    if (board[4] === opponent) score -= WEIGHTS.local_center;
+
+    // Corner control
+    for (let corner of [0, 2, 6, 8]) {
+      if (board[corner] === player) score += WEIGHTS.local_corner;
+      if (board[corner] === opponent) score -= WEIGHTS.local_corner;
+    }
+
+    return score;
+  };
+
+  // Evaluate entire game state
+  const evaluateGameState = (gameBoards, gameBigBoard, nextBoard, player) => {
+    const opponent = player === 'X' ? 'O' : 'X';
+    let score = 0;
+
+    // Check for meta win
+    const metaWinner = checkWinner(gameBigBoard);
+    if (metaWinner === player) return WEIGHTS.meta_win;
+    if (metaWinner === opponent) return -WEIGHTS.meta_win;
+
+    // Meta-board analysis
+    score += countTwoInRows(gameBigBoard, player) * WEIGHTS.meta_two_in_row;
+    score -= countTwoInRows(gameBigBoard, opponent) * WEIGHTS.meta_two_in_row;
+
+    // Meta center and corners
+    if (gameBigBoard[4] === player) score += WEIGHTS.meta_center;
+    if (gameBigBoard[4] === opponent) score -= WEIGHTS.meta_center;
+
+    for (let corner of [0, 2, 6, 8]) {
+      if (gameBigBoard[corner] === player) score += WEIGHTS.meta_corner;
+      if (gameBigBoard[corner] === opponent) score -= WEIGHTS.meta_corner;
+    }
+
+    // Local boards analysis
+    for (let i = 0; i < 9; i++) {
+      if (gameBigBoard[i] === null) {
+        score += evaluateLocalBoard(gameBoards[i], player);
+      }
+    }
+
+    // Board-sending penalty
+    if (nextBoard !== null && gameBigBoard[nextBoard] !== null) {
+      score -= WEIGHTS.send_to_won_board;
+    }
+
+    return score;
+  };
+
+  // Get valid moves
+  const getValidMoves = (gameBoards, gameBigBoard, constraintBoard) => {
+    const moves = [];
+    const boardsToCheck = constraintBoard !== null && gameBigBoard[constraintBoard] === null
+      ? [constraintBoard]
+      : gameBigBoard.map((val, idx) => val === null ? idx : null).filter(idx => idx !== null);
+
+    for (let boardIdx of boardsToCheck) {
+      for (let cellIdx = 0; cellIdx < 9; cellIdx++) {
+        if (gameBoards[boardIdx][cellIdx] === null) {
+          moves.push({ boardIdx, cellIdx });
+        }
+      }
+    }
+    return moves;
+  };
+
+  // Apply move and return new state
+  const applyMoveToState = (gameBoards, gameBigBoard, move, player) => {
+    const newBoards = gameBoards.map((board, i) =>
+      i === move.boardIdx ? board.map((cell, j) => j === move.cellIdx ? player : cell) : [...board]
+    );
+    const newBigBoard = [...gameBigBoard];
+    
+    const boardWinner = checkWinner(newBoards[move.boardIdx]);
+    if (boardWinner && boardWinner !== 'draw') {
+      newBigBoard[move.boardIdx] = boardWinner;
+    } else if (boardWinner === 'draw') {
+      newBigBoard[move.boardIdx] = 'draw';
+    }
+
+    const nextBoard = newBigBoard[move.cellIdx] === null ? move.cellIdx : null;
+    
+    return { newBoards, newBigBoard, nextBoard };
+  };
+
+  // Order moves for better pruning
+  const orderMoves = (moves, gameBoards, gameBigBoard, player) => {
+    return moves.map(move => {
+      let priority = 0;
+      const { newBoards, newBigBoard } = applyMoveToState(gameBoards, gameBigBoard, move, player);
+      
+      // Wins local board
+      if (newBigBoard[move.boardIdx] === player && gameBigBoard[move.boardIdx] === null) {
+        priority += 1000;
+      }
+      
+      // Blocks opponent win
+      const opponent = player === 'X' ? 'O' : 'X';
+      const testBoard = [...gameBoards[move.boardIdx]];
+      testBoard[move.cellIdx] = opponent;
+      if (checkWinner(testBoard) === opponent) {
+        priority += 800;
+      }
+      
+      // Sends to completed board
+      if (gameBigBoard[move.cellIdx] !== null) {
+        priority += 200;
+      }
+      
+      // Center/corner preference
+      if (move.cellIdx === 4) priority += 50;
+      if ([0, 2, 6, 8].includes(move.cellIdx)) priority += 30;
+      
+      return { move, priority };
+    }).sort((a, b) => b.priority - a.priority).map(item => item.move);
+  };
+
+  // Minimax with alpha-beta pruning
+  const minimax = (gameBoards, gameBigBoard, constraintBoard, depth, isMaximizing, alpha, beta, player) => {
+    const opponent = player === 'X' ? 'O' : 'X';
+    
+    // Terminal conditions
+    const metaWinner = checkWinner(gameBigBoard);
+    if (metaWinner !== null || depth === 0) {
+      return evaluateGameState(gameBoards, gameBigBoard, constraintBoard, 'O');
+    }
+
+    const moves = getValidMoves(gameBoards, gameBigBoard, constraintBoard);
+    if (moves.length === 0) return 0;
+
+    const orderedMoves = orderMoves(moves, gameBoards, gameBigBoard, isMaximizing ? 'O' : 'X');
+
+    if (isMaximizing) {
+      let maxEval = -Infinity;
+      for (let move of orderedMoves) {
+        const { newBoards, newBigBoard, nextBoard } = applyMoveToState(
+          gameBoards, gameBigBoard, move, 'O'
+        );
+        const evaluation = minimax(newBoards, newBigBoard, nextBoard, depth - 1, false, alpha, beta, player);
+        maxEval = Math.max(maxEval, evaluation);
+        alpha = Math.max(alpha, evaluation);
+        if (beta <= alpha) break;
+      }
+      return maxEval;
+    } else {
+      let minEval = Infinity;
+      for (let move of orderedMoves) {
+        const { newBoards, newBigBoard, nextBoard } = applyMoveToState(
+          gameBoards, gameBigBoard, move, 'X'
+        );
+        const evaluation = minimax(newBoards, newBigBoard, nextBoard, depth - 1, true, alpha, beta, player);
+        minEval = Math.min(minEval, evaluation);
+        beta = Math.min(beta, evaluation);
+        if (beta <= alpha) break;
+      }
+      return minEval;
+    }
+  };
+
+  // Get best AI move
+  const getBestAiMove = () => {
+    const moves = getValidMoves(boards, bigBoard, activeBoard);
+    if (moves.length === 0) return null;
+
+    const depth = 4; // Medium difficulty
+    const orderedMoves = orderMoves(moves, boards, bigBoard, 'O');
+    
+    let bestMove = orderedMoves[0];
+    let bestScore = -Infinity;
+    const moveScores = [];
+
+    for (let move of orderedMoves) {
+      const { newBoards, newBigBoard, nextBoard } = applyMoveToState(boards, bigBoard, move, 'O');
+      const score = minimax(newBoards, newBigBoard, nextBoard, depth - 1, false, -Infinity, Infinity, 'O');
+      moveScores.push({ move, score });
+      
+      if (score > bestScore) {
+        bestScore = score;
+        bestMove = move;
+      }
+    }
+
+    // Adaptive difficulty - sometimes pick suboptimal move
+    if (Math.random() < aiMistakeRate && moveScores.length > 1) {
+      moveScores.sort((a, b) => b.score - a.score);
+      const suboptimalIndex = Math.min(1 + Math.floor(Math.random() * 2), moveScores.length - 1);
+      return moveScores[suboptimalIndex].move;
+    }
+
+    return bestMove;
+  };
+
+  // Adjust AI difficulty based on results
+  const adjustDifficulty = (playerWon) => {
+    if (playerWon) {
+      setAiMistakeRate(prev => Math.max(0.02, prev - 0.03));
+    } else {
+      setAiMistakeRate(prev => Math.min(0.25, prev + 0.02));
+    }
+  };
+
   // Track session on mount
   useEffect(() => {
-    // Identify user with PostHog
-    const userId = posthog.get_distinct_id();
-    posthog.identify(userId);
+    const userId = posthog?.get_distinct_id?.();
+    posthog?.identify?.(userId);
     
-    posthog.capture('session_started', {
+    posthog?.capture?.('session_started', {
       timestamp: new Date().toISOString()
     });
 
-    // Track when user leaves
     const handleBeforeUnload = () => {
       const sessionDuration = Math.round((Date.now() - sessionStartTime) / 1000);
-      posthog.capture('session_ended', {
+      posthog?.capture?.('session_ended', {
         duration_seconds: sessionDuration,
         games_played: gamesPlayed,
         wins: stats.wins,
@@ -71,17 +327,6 @@ const UltimateTicTacToe = () => {
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
   }, []);
 
-  const checkWinner = (board) => {
-    for (let combo of winCombos) {
-      const [a, b, c] = combo;
-      if (board[a] && board[a] === board[b] && board[a] === board[c]) {
-        return board[a];
-      }
-    }
-    if (board.every(cell => cell !== null)) return 'draw';
-    return null;
-  };
-
   useEffect(() => {
     const bigWinner = checkWinner(bigBoard);
     if (bigWinner && !gameOver) {
@@ -90,24 +335,22 @@ const UltimateTicTacToe = () => {
       
       const gameDuration = gameStartTime ? Math.round((Date.now() - gameStartTime) / 1000) : 0;
       
-      // Update stats
       const newStats = { ...stats };
       if (bigWinner === 'X') {
         newStats.wins = stats.wins + 1;
+        adjustDifficulty(true);
       } else if (bigWinner === 'O') {
         newStats.losses = stats.losses + 1;
+        adjustDifficulty(false);
       } else {
         newStats.draws = stats.draws + 1;
       }
       setStats(newStats);
 
-      // Track game completion with feature flag variant
       let aiVariant = 'default';
       try {
         aiVariant = posthog?.getFeatureFlagPayload?.('ai-thinking-time') || 'default';
-      } catch (e) {
-        // Feature flag not available
-      }
+      } catch (e) {}
       
       posthog?.capture?.('game_completed', {
         result: bigWinner === 'X' ? 'win' : bigWinner === 'O' ? 'loss' : 'draw',
@@ -117,7 +360,8 @@ const UltimateTicTacToe = () => {
         total_games_played: gamesPlayed + 1,
         win_streak: bigWinner === 'X' ? newStats.wins : 0,
         board_positions_used: bigBoard.filter(b => b !== null).length,
-        ai_thinking_variant: aiVariant
+        ai_thinking_variant: aiVariant,
+        ai_mistake_rate: aiMistakeRate
       });
 
       setGamesPlayed(prev => prev + 1);
@@ -128,146 +372,28 @@ const UltimateTicTacToe = () => {
     if (currentPlayer === 'O' && !gameOver) {
       setIsAiThinking(true);
       
-      // Get AI thinking time from feature flag (with fallback)
-      let aiThinkingTime = 600; // default
+      let aiThinkingTime = 600;
       try {
         const flagValue = posthog?.getFeatureFlagPayload?.('ai-thinking-time');
         if (flagValue) {
           aiThinkingTime = Number(flagValue);
         }
-      } catch (e) {
-        console.log('Feature flag not ready yet, using default');
-      }
+      } catch (e) {}
       
       setTimeout(() => {
-        makeAiMove();
+        const move = getBestAiMove();
+        if (move) {
+          handleMove(move.boardIdx, move.cellIdx);
+        }
         setIsAiThinking(false);
       }, aiThinkingTime);
     }
   }, [currentPlayer, gameOver]);
 
-  const makeAiMove = () => {
-    let validBoards = [];
-    if (activeBoard !== null && bigBoard[activeBoard] === null) {
-      validBoards = [activeBoard];
-    } else {
-      validBoards = bigBoard.map((v, i) => v === null ? i : null).filter(i => i !== null);
-    }
-
-    let bestMove = null;
-
-    // 1. Try to win on big board
-    for (let boardIdx of validBoards) {
-      for (let cellIdx = 0; cellIdx < 9; cellIdx++) {
-        if (!boards[boardIdx][cellIdx]) {
-          // Simulate winning this small board
-          const testBoards = boards.map(b => [...b]);
-          testBoards[boardIdx][cellIdx] = 'O';
-          
-          if (checkWinner(testBoards[boardIdx]) === 'O') {
-            // Check if this wins the big board
-            const testBigBoard = [...bigBoard];
-            testBigBoard[boardIdx] = 'O';
-            if (checkWinner(testBigBoard) === 'O') {
-              bestMove = { boardIdx, cellIdx };
-              break;
-            }
-          }
-        }
-      }
-      if (bestMove) break;
-    }
-
-    // 2. Block player from winning big board
-    if (!bestMove) {
-      for (let boardIdx of validBoards) {
-        for (let cellIdx = 0; cellIdx < 9; cellIdx++) {
-          if (!boards[boardIdx][cellIdx]) {
-            const testBoards = boards.map(b => [...b]);
-            testBoards[boardIdx][cellIdx] = 'X';
-            
-            if (checkWinner(testBoards[boardIdx]) === 'X') {
-              const testBigBoard = [...bigBoard];
-              testBigBoard[boardIdx] = 'X';
-              if (checkWinner(testBigBoard) === 'X') {
-                bestMove = { boardIdx, cellIdx };
-                break;
-              }
-            }
-          }
-        }
-        if (bestMove) break;
-      }
-    }
-
-    // 3. Try to win small board
-    if (!bestMove) {
-      for (let boardIdx of validBoards) {
-        const board = boards[boardIdx];
-        for (let i = 0; i < 9; i++) {
-          if (!board[i]) {
-            const testBoard = [...board];
-            testBoard[i] = 'O';
-            if (checkWinner(testBoard) === 'O') {
-              bestMove = { boardIdx, cellIdx: i };
-              break;
-            }
-          }
-        }
-        if (bestMove) break;
-      }
-    }
-
-    // 4. Block player from winning small board
-    if (!bestMove) {
-      for (let boardIdx of validBoards) {
-        const board = boards[boardIdx];
-        for (let i = 0; i < 9; i++) {
-          if (!board[i]) {
-            const testBoard = [...board];
-            testBoard[i] = 'X';
-            if (checkWinner(testBoard) === 'X') {
-              bestMove = { boardIdx, cellIdx: i };
-              break;
-            }
-          }
-        }
-        if (bestMove) break;
-      }
-    }
-
-    // 5. Strategic positioning
-    if (!bestMove) {
-      const randomBoard = validBoards[Math.floor(Math.random() * validBoards.length)];
-      const board = boards[randomBoard];
-      const emptyCells = board.map((cell, i) => cell === null ? i : null).filter(i => i !== null);
-      
-      // Prioritize center and corners
-      const priorityMoves = [4, 0, 2, 6, 8, 1, 3, 5, 7];
-      for (let move of priorityMoves) {
-        if (emptyCells.includes(move)) {
-          bestMove = { boardIdx: randomBoard, cellIdx: move };
-          break;
-        }
-      }
-      
-      if (!bestMove && emptyCells.length > 0) {
-        const randomCell = emptyCells[Math.floor(Math.random() * emptyCells.length)];
-        bestMove = { boardIdx: randomBoard, cellIdx: randomCell };
-      }
-    }
-
-    if (bestMove) {
-      handleMove(bestMove.boardIdx, bestMove.cellIdx);
-    }
-  };
-
   const handleMove = (boardIdx, cellIdx) => {
     if (gameOver || bigBoard[boardIdx] !== null || boards[boardIdx][cellIdx] !== null) return;
     
     if (activeBoard !== null && activeBoard !== boardIdx && bigBoard[activeBoard] === null) return;
-
-    const moveStartTime = Date.now();
 
     const newBoards = boards.map((board, i) => 
       i === boardIdx ? board.map((cell, j) => j === cellIdx ? currentPlayer : cell) : board
@@ -276,8 +402,7 @@ const UltimateTicTacToe = () => {
     setLastMove({ boardIdx, cellIdx });
     setMoveCount(prev => prev + 1);
 
-    // Track move
-    posthog.capture('move_made', {
+    posthog?.capture?.('move_made', {
       player: currentPlayer,
       board_index: boardIdx,
       cell_index: cellIdx,
@@ -291,8 +416,7 @@ const UltimateTicTacToe = () => {
       newBigBoard[boardIdx] = smallWinner === 'draw' ? 'draw' : smallWinner;
       setBigBoard(newBigBoard);
 
-      // Track board completion
-      posthog.capture('board_completed', {
+      posthog?.capture?.('board_completed', {
         board_index: boardIdx,
         winner: smallWinner,
         moves_to_complete: moveCount + 1
@@ -305,10 +429,9 @@ const UltimateTicTacToe = () => {
   };
 
   const resetGame = () => {
-    // Track game abandonment if not finished
     if (!gameOver && moveCount > 0) {
       const gameDuration = gameStartTime ? Math.round((Date.now() - gameStartTime) / 1000) : 0;
-      posthog.capture('game_abandoned', {
+      posthog?.capture?.('game_abandoned', {
         moves_made: moveCount,
         duration_seconds: gameDuration,
         boards_completed: bigBoard.filter(b => b !== null).length
@@ -325,9 +448,10 @@ const UltimateTicTacToe = () => {
     setLastMove(null);
     setGameStartTime(Date.now());
 
-    posthog.capture('game_started', {
+    posthog?.capture?.('game_started', {
       game_number: gamesPlayed + 1,
-      current_win_streak: stats.wins
+      current_win_streak: stats.wins,
+      ai_mistake_rate: aiMistakeRate
     });
   };
 
@@ -335,7 +459,7 @@ const UltimateTicTacToe = () => {
     setShowRickRoll(true);
     setRickRollStartTime(Date.now());
     
-    posthog.capture('rickroll_clicked', {
+    posthog?.capture?.('rickroll_clicked', {
       games_played: gamesPlayed,
       current_wins: stats.wins
     });
@@ -344,7 +468,7 @@ const UltimateTicTacToe = () => {
   const handleRickRollClose = () => {
     const watchDuration = rickRollStartTime ? Math.round((Date.now() - rickRollStartTime) / 1000) : 0;
     
-    posthog.capture('rickroll_closed', {
+    posthog?.capture?.('rickroll_closed', {
       watch_duration_seconds: watchDuration
     });
     
