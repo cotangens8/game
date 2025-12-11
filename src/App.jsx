@@ -17,17 +17,32 @@ if (typeof window !== 'undefined' && !posthog.__loaded) {
       persistence: 'localStorage',
       loaded: (ph) => {
         console.log('PostHog initialized successfully ✓');
-        console.log('PostHog instance:', ph);
-        // Test feature flag immediately
-        setTimeout(() => {
-          const flagValue = ph.getFeatureFlagPayload('ai-thinking-time');
-          console.log('Feature flag value:', flagValue);
-        }, 1000);
       },
       disable_session_recording: true,
       disable_surveys: true,
+      capture_dead_clicks: true,
+      capture_performance: true,
     });
-    console.log('PostHog init called');
+    
+    window.addEventListener('error', (event) => {
+      posthog?.capture?.('javascript_error', {
+        error_message: event.message,
+        error_source: event.filename,
+        error_line: event.lineno,
+        error_column: event.colno,
+        error_stack: event.error?.stack,
+        page_url: window.location.href
+      });
+    });
+    
+    window.addEventListener('unhandledrejection', (event) => {
+      posthog?.capture?.('unhandled_promise_rejection', {
+        error_message: event.reason?.message || String(event.reason),
+        error_stack: event.reason?.stack,
+        page_url: window.location.href
+      });
+    });
+    
   } catch (error) {
     console.error('PostHog initialization error:', error);
   }
@@ -60,33 +75,12 @@ const UltimateTicTacToe = () => {
   const [isAiThinking, setIsAiThinking] = useState(false);
   const [lastMove, setLastMove] = useState(null);
   const [showRickRoll, setShowRickRoll] = useState(false);
-  const [gameStartTime, setGameStartTime] = useState(null);
+  const [gameStartTime, setGameStartTime] = useState(Date.now());
   const [rickRollStartTime, setRickRollStartTime] = useState(null);
   const [sessionStartTime] = useState(Date.now());
   const [gamesPlayed, setGamesPlayed] = useState(0);
   const [aiMistakeRate, setAiMistakeRate] = useState(0.10);
   const [hasError, setHasError] = useState(false);
-
-  // Error boundary effect
-  useEffect(() => {
-    const errorHandler = (error, errorInfo) => {
-      setHasError(true);
-      posthog?.capture?.('react_error', {
-        error_message: error.toString(),
-        error_stack: error.stack,
-        component_stack: errorInfo?.componentStack,
-        page_url: window.location.href
-      });
-    };
-
-    window.addEventListener('reactError', (event) => {
-      errorHandler(event.detail.error, event.detail.errorInfo);
-    });
-
-    return () => {
-      window.removeEventListener('reactError', errorHandler);
-    };
-  }, []);
 
   const winCombos = [
     [0, 1, 2], [3, 4, 5], [6, 7, 8],
@@ -94,7 +88,6 @@ const UltimateTicTacToe = () => {
     [0, 4, 8], [2, 4, 6]
   ];
 
-  // Check if a board has a winner
   const checkWinner = (board) => {
     for (let combo of winCombos) {
       const [a, b, c] = combo;
@@ -106,7 +99,6 @@ const UltimateTicTacToe = () => {
     return null;
   };
 
-  // Count two-in-a-rows with empty third cell
   const countTwoInRows = (board, player) => {
     let count = 0;
     for (let combo of winCombos) {
@@ -119,26 +111,21 @@ const UltimateTicTacToe = () => {
     return count;
   };
 
-  // Evaluate local board position
   const evaluateLocalBoard = (board, player) => {
     const opponent = player === 'X' ? 'O' : 'X';
     let score = 0;
 
-    // Check if won
     const winner = checkWinner(board);
     if (winner === player) return WEIGHTS.local_win;
     if (winner === opponent) return -WEIGHTS.local_win;
     if (winner === 'draw') return 0;
 
-    // Two in a rows
     score += countTwoInRows(board, player) * WEIGHTS.local_two_in_row;
     score -= countTwoInRows(board, opponent) * WEIGHTS.local_two_in_row;
 
-    // Center control
     if (board[4] === player) score += WEIGHTS.local_center;
     if (board[4] === opponent) score -= WEIGHTS.local_center;
 
-    // Corner control
     for (let corner of [0, 2, 6, 8]) {
       if (board[corner] === player) score += WEIGHTS.local_corner;
       if (board[corner] === opponent) score -= WEIGHTS.local_corner;
@@ -147,21 +134,17 @@ const UltimateTicTacToe = () => {
     return score;
   };
 
-  // Evaluate entire game state
   const evaluateGameState = (gameBoards, gameBigBoard, nextBoard, player) => {
     const opponent = player === 'X' ? 'O' : 'X';
     let score = 0;
 
-    // Check for meta win
     const metaWinner = checkWinner(gameBigBoard);
     if (metaWinner === player) return WEIGHTS.meta_win;
     if (metaWinner === opponent) return -WEIGHTS.meta_win;
 
-    // Meta-board analysis
     score += countTwoInRows(gameBigBoard, player) * WEIGHTS.meta_two_in_row;
     score -= countTwoInRows(gameBigBoard, opponent) * WEIGHTS.meta_two_in_row;
 
-    // Meta center and corners
     if (gameBigBoard[4] === player) score += WEIGHTS.meta_center;
     if (gameBigBoard[4] === opponent) score -= WEIGHTS.meta_center;
 
@@ -170,14 +153,12 @@ const UltimateTicTacToe = () => {
       if (gameBigBoard[corner] === opponent) score -= WEIGHTS.meta_corner;
     }
 
-    // Local boards analysis
     for (let i = 0; i < 9; i++) {
       if (gameBigBoard[i] === null) {
         score += evaluateLocalBoard(gameBoards[i], player);
       }
     }
 
-    // Board-sending penalty
     if (nextBoard !== null && gameBigBoard[nextBoard] !== null) {
       score -= WEIGHTS.send_to_won_board;
     }
@@ -185,7 +166,6 @@ const UltimateTicTacToe = () => {
     return score;
   };
 
-  // Get valid moves
   const getValidMoves = (gameBoards, gameBigBoard, constraintBoard) => {
     const moves = [];
     const boardsToCheck = constraintBoard !== null && gameBigBoard[constraintBoard] === null
@@ -202,7 +182,6 @@ const UltimateTicTacToe = () => {
     return moves;
   };
 
-  // Apply move and return new state
   const applyMoveToState = (gameBoards, gameBigBoard, move, player) => {
     const newBoards = gameBoards.map((board, i) =>
       i === move.boardIdx ? board.map((cell, j) => j === move.cellIdx ? player : cell) : [...board]
@@ -221,18 +200,15 @@ const UltimateTicTacToe = () => {
     return { newBoards, newBigBoard, nextBoard };
   };
 
-  // Order moves for better pruning
   const orderMoves = (moves, gameBoards, gameBigBoard, player) => {
     return moves.map(move => {
       let priority = 0;
-      const { newBoards, newBigBoard } = applyMoveToState(gameBoards, gameBigBoard, move, player);
+      const { newBigBoard } = applyMoveToState(gameBoards, gameBigBoard, move, player);
       
-      // Wins local board
       if (newBigBoard[move.boardIdx] === player && gameBigBoard[move.boardIdx] === null) {
         priority += 1000;
       }
       
-      // Blocks opponent win
       const opponent = player === 'X' ? 'O' : 'X';
       const testBoard = [...gameBoards[move.boardIdx]];
       testBoard[move.cellIdx] = opponent;
@@ -240,12 +216,10 @@ const UltimateTicTacToe = () => {
         priority += 800;
       }
       
-      // Sends to completed board
       if (gameBigBoard[move.cellIdx] !== null) {
         priority += 200;
       }
       
-      // Center/corner preference
       if (move.cellIdx === 4) priority += 50;
       if ([0, 2, 6, 8].includes(move.cellIdx)) priority += 30;
       
@@ -253,11 +227,7 @@ const UltimateTicTacToe = () => {
     }).sort((a, b) => b.priority - a.priority).map(item => item.move);
   };
 
-  // Minimax with alpha-beta pruning
   const minimax = (gameBoards, gameBigBoard, constraintBoard, depth, isMaximizing, alpha, beta, player) => {
-    const opponent = player === 'X' ? 'O' : 'X';
-    
-    // Terminal conditions
     const metaWinner = checkWinner(gameBigBoard);
     if (metaWinner !== null || depth === 0) {
       return evaluateGameState(gameBoards, gameBigBoard, constraintBoard, 'O');
@@ -295,13 +265,12 @@ const UltimateTicTacToe = () => {
     }
   };
 
-  // Get best AI move
   const getBestAiMove = () => {
     try {
       const moves = getValidMoves(boards, bigBoard, activeBoard);
       if (moves.length === 0) return null;
 
-      const depth = 4; // Medium difficulty
+      const depth = 4;
       const orderedMoves = orderMoves(moves, boards, bigBoard, 'O');
       
       let bestMove = orderedMoves[0];
@@ -319,7 +288,6 @@ const UltimateTicTacToe = () => {
         }
       }
 
-      // Adaptive difficulty - sometimes pick suboptimal move
       if (Math.random() < aiMistakeRate && moveScores.length > 1) {
         moveScores.sort((a, b) => b.score - a.score);
         const suboptimalIndex = Math.min(1 + Math.floor(Math.random() * 2), moveScores.length - 1);
@@ -329,22 +297,11 @@ const UltimateTicTacToe = () => {
       return bestMove;
     } catch (error) {
       console.error('Error in getBestAiMove:', error);
-      posthog?.capture?.('ai_error', {
-        error_message: error.message,
-        error_stack: error.stack,
-        game_state: {
-          activeBoard,
-          moveCount,
-          aiMistakeRate
-        }
-      });
-      // Fallback to random valid move
       const moves = getValidMoves(boards, bigBoard, activeBoard);
       return moves[Math.floor(Math.random() * moves.length)] || null;
     }
   };
 
-  // Adjust AI difficulty based on results
   const adjustDifficulty = (playerWon) => {
     if (playerWon) {
       setAiMistakeRate(prev => Math.max(0.02, prev - 0.03));
@@ -353,17 +310,12 @@ const UltimateTicTacToe = () => {
     }
   };
 
-  // Track session on mount and explicitly fetch feature flags
   useEffect(() => {
     const userId = posthog?.get_distinct_id?.();
     posthog?.identify?.(userId);
     
-    // Explicitly call feature flags to trigger tracking
     posthog?.onFeatureFlags?.(() => {
       const flagValue = posthog?.getFeatureFlag?.('ai-speed-affecting-total-session-duration');
-      console.log('Feature flag loaded:', flagValue);
-      
-      // Track that we checked the flag
       posthog?.capture?.('$feature_flag_called', {
         $feature_flag: 'ai-speed-affecting-total-session-duration',
         $feature_flag_response: flagValue
@@ -438,14 +390,12 @@ const UltimateTicTacToe = () => {
       
       let aiThinkingTime = 600;
       try {
-        // Use getFeatureFlag instead of getFeatureFlagPayload for better tracking
         const flagValue = posthog?.getFeatureFlag?.('ai-speed-affecting-total-session-duration');
-        console.log('AI thinking flag value:', flagValue);
         
         if (flagValue === 'control') {
-          aiThinkingTime = 300; // Fast - control group
+          aiThinkingTime = 300;
         } else if (flagValue === 'slow') {
-          aiThinkingTime = 900; // Slow - test variant
+          aiThinkingTime = 900;
         }
       } catch (e) {
         console.log('Feature flag error:', e);
@@ -505,12 +455,7 @@ const UltimateTicTacToe = () => {
         error_message: error.message,
         error_stack: error.stack,
         board_index: boardIdx,
-        cell_index: cellIdx,
-        game_state: {
-          currentPlayer,
-          moveCount,
-          activeBoard
-        }
+        cell_index: cellIdx
       });
     }
   };
@@ -592,7 +537,13 @@ const UltimateTicTacToe = () => {
             return (
               <button
                 key={cellIdx}
-                onClick={() => currentPlayer === 'X' && handleMove(boardIdx, cellIdx)}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (currentPlayer === 'X') {
+                    handleMove(boardIdx, cellIdx);
+                  }
+                }}
                 disabled={currentPlayer === 'O' || gameOver}
                 className={`cell ${isLastMove ? 'last-move' : ''}`}
               >
@@ -639,7 +590,7 @@ const UltimateTicTacToe = () => {
       <div className="game-container">
         <div className="header">
           <h1>Oops! Something went wrong</h1>
-          <p className="subtitle">The game encountered an error. We've been notified!</p>
+          <p className="subtitle">The game encountered an error</p>
         </div>
         <div className="controls">
           <button 
@@ -649,7 +600,6 @@ const UltimateTicTacToe = () => {
             }} 
             className="btn btn-secondary"
           >
-            <span className="btn-icon">↻</span>
             Try Again
           </button>
         </div>
@@ -667,26 +617,22 @@ const UltimateTicTacToe = () => {
       </button>
 
       <div className="header">
-        <div className="title-row">
-          <h1>Ultimate Tic-Tac-Toe</h1>
-        </div>
+        <h1>Ultimate Tic-Tac-Toe</h1>
         <p className="subtitle">
-          {gameOver ? 'Game Over!' : activeBoard !== null ? 'Play in the highlighted board' : 'Play in any available board'}
+          {gameOver ? 'Game Over!' : activeBoard !== null ? 'Play in highlighted board' : 'Play any board'}
         </p>
-        <p className="rules">Win 3 small boards in a row to win the game</p>
+        <p className="rules">Win 3 small boards in a row</p>
       </div>
 
       <div className="stats">
-        <div className="stat">
-          <span>W: {stats.wins}</span>
-        </div>
+        <span>W: {stats.wins}</span>
         <span className="stat-divider">|</span>
         <span>L: {stats.losses}</span>
         <span className="stat-divider">|</span>
         <span>D: {stats.draws}</span>
       </div>
 
-      <div className="board-container">
+      <div className="board-wrapper">
         <div className="big-board">
           {[0, 1, 2, 3, 4, 5, 6, 7, 8].map(renderSmallBoard)}
         </div>
