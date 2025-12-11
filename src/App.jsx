@@ -322,12 +322,12 @@ const UltimateTicTacToe = () => {
     
     // Explicitly call feature flags to trigger tracking
     posthog?.onFeatureFlags?.(() => {
-      const flagValue = posthog?.getFeatureFlag?.('ai-thinking-time');
+      const flagValue = posthog?.getFeatureFlag?.('ai-speed-affecting-total-session-duration');
       console.log('Feature flag loaded:', flagValue);
       
       // Track that we checked the flag
       posthog?.capture?.('$feature_flag_called', {
-        $feature_flag: 'ai-thinking-time',
+        $feature_flag: 'ai-speed-affecting-total-session-duration',
         $feature_flag_response: flagValue
       });
     });
@@ -401,13 +401,13 @@ const UltimateTicTacToe = () => {
       let aiThinkingTime = 600;
       try {
         // Use getFeatureFlag instead of getFeatureFlagPayload for better tracking
-        const flagValue = posthog?.getFeatureFlag?.('ai-thinking-time');
+        const flagValue = posthog?.getFeatureFlag?.('ai-speed-affecting-total-session-duration');
         console.log('AI thinking flag value:', flagValue);
         
-        if (flagValue === 'fast') {
-          aiThinkingTime = 300;
+        if (flagValue === 'control') {
+          aiThinkingTime = 300; // Fast - control group
         } else if (flagValue === 'slow') {
-          aiThinkingTime = 900;
+          aiThinkingTime = 900; // Slow - test variant
         }
       } catch (e) {
         console.log('Feature flag error:', e);
