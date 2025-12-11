@@ -356,9 +356,14 @@ h1 {
   z-index: 9999;
 }
 
-.rickroll-container iframe {
+.rickroll-container #rickroll-player {
   width: 100vw;
   height: 100vh;
+}
+
+.rickroll-container iframe {
+  width: 100vw !important;
+  height: 100vh !important;
   border: none;
 }
 
