@@ -18,7 +18,18 @@ if (typeof window !== 'undefined' && !posthog.__loaded) {
       loaded: (ph) => {
         console.log('PostHog initialized successfully ✓');
       },
-      disable_session_recording: true,
+      // Session Recording Configuration
+      disable_session_recording: false,
+      session_recording: {
+        maskAllInputs: true,
+        maskTextSelector: '*',
+        recordCanvas: false,
+        recordCrossOriginIframes: false,
+        // Sample 100% of sessions
+        sampling: {
+          minimumDuration: 0
+        }
+      },
       disable_surveys: true,
       capture_dead_clicks: true,
       capture_performance: true,
@@ -81,6 +92,15 @@ const UltimateTicTacToe = () => {
   const [gamesPlayed, setGamesPlayed] = useState(0);
   const [aiMistakeRate, setAiMistakeRate] = useState(0.10);
   const [hasError, setHasError] = useState(false);
+  const [showPlayButton, setShowPlayButton] = useState(true);
+
+  useEffect(() => {
+    // Load YouTube IFrame API
+    const tag = document.createElement('script');
+    tag.src = 'https://www.youtube.com/iframe_api';
+    const firstScriptTag = document.getElementsByTagName('script')[0];
+    firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+  }, []);
 
   const winCombos = [
     [0, 1, 2], [3, 4, 5], [6, 7, 8],
@@ -489,12 +509,22 @@ const UltimateTicTacToe = () => {
 
   const handleRickRollClick = () => {
     setShowRickRoll(true);
+    setShowPlayButton(true);
     setRickRollStartTime(Date.now());
     
     posthog?.capture?.('rickroll_clicked', {
       games_played: gamesPlayed,
       current_wins: stats.wins
     });
+  };
+
+  const handlePlayClick = () => {
+    setShowPlayButton(false);
+    // Try to play the video
+    const iframe = document.getElementById('rickroll-iframe');
+    if (iframe && iframe.contentWindow) {
+      iframe.contentWindow.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
+    }
   };
 
   const handleRickRollClose = () => {
@@ -572,10 +602,22 @@ const UltimateTicTacToe = () => {
         >
           ✕
         </button>
+        {showPlayButton && (
+          <div className="play-overlay" onClick={handlePlayClick}>
+            <button className="play-button">
+              <svg width="80" height="80" viewBox="0 0 80 80" fill="none">
+                <circle cx="40" cy="40" r="38" stroke="white" strokeWidth="3" fill="rgba(0,0,0,0.7)" />
+                <path d="M 30 20 L 30 60 L 60 40 Z" fill="white" />
+              </svg>
+              <span className="play-text">Play Video</span>
+            </button>
+          </div>
+        )}
         <iframe
+          id="rickroll-iframe"
           width="100%"
           height="100%"
-          src="https://www.youtube.com/embed/dQw4w9WgXcQ?autoplay=1"
+          src="https://www.youtube.com/embed/dQw4w9WgXcQ?enablejsapi=1&autoplay=0&mute=0"
           title="You shouldn't have clicked that..."
           frameBorder="0"
           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
