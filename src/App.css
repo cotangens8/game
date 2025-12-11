@@ -323,27 +323,29 @@ h1 {
 /* Don't Click Button */
 .dont-click-btn {
   position: absolute;
-  top: 1rem;
-  right: 1rem;
-  padding: 0.5rem 0.875rem;
-  background: transparent;
+  top: 0.5rem;
+  right: 0.5rem;
+  padding: 0.375rem 0.625rem;
+  background: rgba(0, 0, 0, 0.7);
   border: 1px solid #262626;
   color: #666;
-  border-radius: 0.5rem;
-  font-size: 0.75rem;
+  border-radius: 0.375rem;
+  font-size: 0.65rem;
   font-weight: 300;
   cursor: pointer;
   transition: all 0.2s;
   font-family: inherit;
   touch-action: manipulation;
-  min-height: 36px;
   z-index: 100;
   user-select: none;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 
 .dont-click-btn:active {
   transform: scale(0.95);
   border-color: #404040;
+  color: #999;
 }
 
 /* Rick Roll */
@@ -457,6 +459,14 @@ h1 {
   
   .small-board {
     padding: 0.15rem;
+  }
+  
+  .dont-click-btn {
+    top: 0.375rem;
+    right: 0.375rem;
+    padding: 0.25rem 0.5rem;
+    font-size: 0.6rem;
+    min-height: 28px;
   }
 }
 
