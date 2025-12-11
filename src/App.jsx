@@ -18,14 +18,12 @@ if (typeof window !== 'undefined' && !posthog.__loaded) {
       loaded: (ph) => {
         console.log('PostHog initialized successfully ✓');
       },
-      // Session Recording Configuration
       disable_session_recording: false,
       session_recording: {
         maskAllInputs: true,
         maskTextSelector: '*',
         recordCanvas: false,
         recordCrossOriginIframes: false,
-        // Sample 100% of sessions
         sampling: {
           minimumDuration: 0
         }
@@ -59,19 +57,51 @@ if (typeof window !== 'undefined' && !posthog.__loaded) {
   }
 }
 
-// AI Evaluation Weights
+// =============================================================================
+// IMPROVED AI EVALUATION WEIGHTS
+// =============================================================================
+// Key changes:
+// 1. Winning > Blocking > Positioning (clearer priority hierarchy)
+// 2. Reduced "trap" incentives - AI wins by playing well, not by cornering you
+// 3. Board position value matters (center board is strategic)
+// 4. Sending opponent to free choice is less punishing
+// =============================================================================
+
 const WEIGHTS = {
-  meta_win: 10000,
-  meta_two_in_row: 500,
-  meta_center: 200,
-  meta_corner: 100,
-  local_win: 150,
-  local_two_in_row: 20,
-  local_center: 8,
-  local_corner: 5,
-  send_to_won_board: 80,
-  send_to_losing_board: -60,
-  block_opponent_meta: 400
+  // Meta-game (winning the big board) - HIGHEST PRIORITY
+  meta_win: 100000,
+  meta_block_opponent_win: 8000,      // Block opponent's winning move
+  meta_two_in_row: 600,               // Two boards in a row (threatening win)
+  meta_block_two_in_row: 400,         // Block opponent's two-in-a-row
+  
+  // Board position values (center and corners are strategic)
+  meta_center: 250,                   // Center board control
+  meta_corner: 120,                   // Corner board control
+  meta_edge: 60,                      // Edge board control
+  
+  // Local board evaluation
+  local_win: 200,                     // Winning a small board
+  local_block_win: 150,               // Blocking opponent from winning small board
+  local_two_in_row: 25,
+  local_center: 12,
+  local_corner: 6,
+  
+  // Next-board dynamics (REBALANCED - less punishing)
+  send_to_won_board: 100,             // Good: opponent gets free choice but we're not trapped
+  send_to_favorable_board: 40,        // Slight bonus for sending to board we're winning
+  send_to_contested_board: 0,         // Neutral
+  send_to_unfavorable_board: -30,     // Penalty for sending to board opponent controls
+  
+  // Strategic depth
+  fork_threat: 300,                   // Creating multiple winning threats
+  board_control_bonus: 15,            // Bonus per controlled position in valuable boards
+};
+
+// Board position importance for meta-game
+const BOARD_IMPORTANCE = {
+  4: 1.5,    // Center - most valuable
+  0: 1.2, 2: 1.2, 6: 1.2, 8: 1.2,  // Corners - valuable
+  1: 1.0, 3: 1.0, 5: 1.0, 7: 1.0   // Edges - standard
 };
 
 const UltimateTicTacToe = () => {
@@ -90,12 +120,11 @@ const UltimateTicTacToe = () => {
   const [rickRollStartTime, setRickRollStartTime] = useState(null);
   const [sessionStartTime] = useState(Date.now());
   const [gamesPlayed, setGamesPlayed] = useState(0);
-  const [aiMistakeRate, setAiMistakeRate] = useState(0.10);
+  const [aiMistakeRate, setAiMistakeRate] = useState(0.08); // Slightly lower base mistake rate
   const [hasError, setHasError] = useState(false);
   const [showPlayButton, setShowPlayButton] = useState(true);
 
   useEffect(() => {
-    // Load YouTube IFrame API
     const tag = document.createElement('script');
     tag.src = 'https://www.youtube.com/iframe_api';
     const firstScriptTag = document.getElementsByTagName('script')[0];
@@ -119,6 +148,7 @@ const UltimateTicTacToe = () => {
     return null;
   };
 
+  // Count two-in-a-rows (potential winning threats)
   const countTwoInRows = (board, player) => {
     let count = 0;
     for (let combo of winCombos) {
@@ -131,18 +161,50 @@ const UltimateTicTacToe = () => {
     return count;
   };
 
-  const evaluateLocalBoard = (board, player) => {
+  // Check if a move would create a fork (multiple winning threats)
+  const countForkThreats = (board, player) => {
+    return countTwoInRows(board, player);
+  };
+
+  // Evaluate how favorable a board is for a player
+  const evaluateBoardControl = (board, player) => {
+    const opponent = player === 'X' ? 'O' : 'X';
+    let playerCount = 0;
+    let opponentCount = 0;
+    
+    board.forEach(cell => {
+      if (cell === player) playerCount++;
+      if (cell === opponent) opponentCount++;
+    });
+    
+    // Positive if we have more pieces, negative if opponent does
+    return playerCount - opponentCount;
+  };
+
+  // Improved local board evaluation
+  const evaluateLocalBoard = (board, player, boardIdx) => {
     const opponent = player === 'X' ? 'O' : 'X';
     let score = 0;
+    const importance = BOARD_IMPORTANCE[boardIdx] || 1.0;
 
     const winner = checkWinner(board);
-    if (winner === player) return WEIGHTS.local_win;
-    if (winner === opponent) return -WEIGHTS.local_win;
+    if (winner === player) return WEIGHTS.local_win * importance;
+    if (winner === opponent) return -WEIGHTS.local_win * importance;
     if (winner === 'draw') return 0;
 
-    score += countTwoInRows(board, player) * WEIGHTS.local_two_in_row;
-    score -= countTwoInRows(board, opponent) * WEIGHTS.local_two_in_row;
+    // Two-in-a-row threats
+    const playerThreats = countTwoInRows(board, player);
+    const opponentThreats = countTwoInRows(board, opponent);
+    
+    score += playerThreats * WEIGHTS.local_two_in_row;
+    score -= opponentThreats * WEIGHTS.local_two_in_row;
+    
+    // Blocking bonus if opponent has threats
+    if (opponentThreats > 0) {
+      score += WEIGHTS.local_block_win * 0.3;
+    }
 
+    // Position control
     if (board[4] === player) score += WEIGHTS.local_center;
     if (board[4] === opponent) score -= WEIGHTS.local_center;
 
@@ -151,37 +213,91 @@ const UltimateTicTacToe = () => {
       if (board[corner] === opponent) score -= WEIGHTS.local_corner;
     }
 
+    return score * importance;
+  };
+
+  // Evaluate the destination board when sending opponent there
+  const evaluateNextBoardForOpponent = (gameBoards, gameBigBoard, nextBoardIdx, player) => {
+    if (nextBoardIdx === null || gameBigBoard[nextBoardIdx] !== null) {
+      // Sending to won board = opponent gets free choice
+      return WEIGHTS.send_to_won_board;
+    }
+    
+    const opponent = player === 'X' ? 'O' : 'X';
+    const boardControl = evaluateBoardControl(gameBoards[nextBoardIdx], player);
+    const opponentThreats = countTwoInRows(gameBoards[nextBoardIdx], opponent);
+    const playerThreats = countTwoInRows(gameBoards[nextBoardIdx], player);
+    
+    let score = 0;
+    
+    // If opponent has winning threats in that board, bad for us
+    if (opponentThreats > 0) {
+      score += WEIGHTS.send_to_unfavorable_board * opponentThreats;
+    }
+    
+    // If we have threats there, good (opponent must defend)
+    if (playerThreats > 0) {
+      score += WEIGHTS.send_to_favorable_board * playerThreats;
+    }
+    
+    // General board control consideration
+    score += boardControl * 5;
+    
     return score;
   };
 
+  // Main game state evaluation - IMPROVED
   const evaluateGameState = (gameBoards, gameBigBoard, nextBoard, player) => {
     const opponent = player === 'X' ? 'O' : 'X';
     let score = 0;
 
+    // Check for meta-game winner
     const metaWinner = checkWinner(gameBigBoard);
     if (metaWinner === player) return WEIGHTS.meta_win;
     if (metaWinner === opponent) return -WEIGHTS.meta_win;
 
-    score += countTwoInRows(gameBigBoard, player) * WEIGHTS.meta_two_in_row;
-    score -= countTwoInRows(gameBigBoard, opponent) * WEIGHTS.meta_two_in_row;
-
-    if (gameBigBoard[4] === player) score += WEIGHTS.meta_center;
-    if (gameBigBoard[4] === opponent) score -= WEIGHTS.meta_center;
-
-    for (let corner of [0, 2, 6, 8]) {
-      if (gameBigBoard[corner] === player) score += WEIGHTS.meta_corner;
-      if (gameBigBoard[corner] === opponent) score -= WEIGHTS.meta_corner;
+    // Meta-game threats (two boards in a row)
+    const playerMetaThreats = countTwoInRows(gameBigBoard, player);
+    const opponentMetaThreats = countTwoInRows(gameBigBoard, opponent);
+    
+    score += playerMetaThreats * WEIGHTS.meta_two_in_row;
+    score -= opponentMetaThreats * WEIGHTS.meta_two_in_row;
+    
+    // Blocking opponent's meta threats is valuable
+    if (opponentMetaThreats > 0) {
+      score += WEIGHTS.meta_block_two_in_row * 0.5;
+    }
+    
+    // Fork detection (multiple meta threats = very strong)
+    if (playerMetaThreats >= 2) {
+      score += WEIGHTS.fork_threat;
+    }
+    if (opponentMetaThreats >= 2) {
+      score -= WEIGHTS.fork_threat;
     }
 
+    // Board position values
     for (let i = 0; i < 9; i++) {
-      if (gameBigBoard[i] === null) {
-        score += evaluateLocalBoard(gameBoards[i], player);
+      if (gameBigBoard[i] === player) {
+        if (i === 4) score += WEIGHTS.meta_center;
+        else if ([0, 2, 6, 8].includes(i)) score += WEIGHTS.meta_corner;
+        else score += WEIGHTS.meta_edge;
+      } else if (gameBigBoard[i] === opponent) {
+        if (i === 4) score -= WEIGHTS.meta_center;
+        else if ([0, 2, 6, 8].includes(i)) score -= WEIGHTS.meta_corner;
+        else score -= WEIGHTS.meta_edge;
       }
     }
 
-    if (nextBoard !== null && gameBigBoard[nextBoard] !== null) {
-      score -= WEIGHTS.send_to_won_board;
+    // Evaluate each local board
+    for (let i = 0; i < 9; i++) {
+      if (gameBigBoard[i] === null) {
+        score += evaluateLocalBoard(gameBoards[i], player, i);
+      }
     }
+
+    // Evaluate where we're sending the opponent
+    score += evaluateNextBoardForOpponent(gameBoards, gameBigBoard, nextBoard, player);
 
     return score;
   };
@@ -220,28 +336,47 @@ const UltimateTicTacToe = () => {
     return { newBoards, newBigBoard, nextBoard };
   };
 
+  // Improved move ordering for better alpha-beta pruning
   const orderMoves = (moves, gameBoards, gameBigBoard, player) => {
+    const opponent = player === 'X' ? 'O' : 'X';
+    
     return moves.map(move => {
       let priority = 0;
-      const { newBigBoard } = applyMoveToState(gameBoards, gameBigBoard, move, player);
+      const { newBoards, newBigBoard, nextBoard } = applyMoveToState(gameBoards, gameBigBoard, move, player);
       
+      // Highest priority: Winning the game
+      if (checkWinner(newBigBoard) === player) {
+        priority += 100000;
+      }
+      
+      // High priority: Winning a board
       if (newBigBoard[move.boardIdx] === player && gameBigBoard[move.boardIdx] === null) {
-        priority += 1000;
+        priority += 2000 * (BOARD_IMPORTANCE[move.boardIdx] || 1);
       }
       
-      const opponent = player === 'X' ? 'O' : 'X';
-      const testBoard = [...gameBoards[move.boardIdx]];
-      testBoard[move.cellIdx] = opponent;
-      if (checkWinner(testBoard) === opponent) {
-        priority += 800;
+      // High priority: Blocking opponent from winning a board
+      const testBoardBlock = [...gameBoards[move.boardIdx]];
+      testBoardBlock[move.cellIdx] = opponent;
+      if (checkWinner(testBoardBlock) === opponent) {
+        priority += 1500 * (BOARD_IMPORTANCE[move.boardIdx] || 1);
       }
       
-      if (gameBigBoard[move.cellIdx] !== null) {
-        priority += 200;
+      // Medium priority: Creating threats
+      const threatsAfter = countTwoInRows(newBoards[move.boardIdx], player);
+      priority += threatsAfter * 200;
+      
+      // Consider where we send opponent (but less weight than before)
+      if (nextBoard !== null && gameBigBoard[nextBoard] === null) {
+        const opponentThreatsThere = countTwoInRows(gameBoards[nextBoard], opponent);
+        priority -= opponentThreatsThere * 100; // Penalty if opponent has threats there
       }
       
-      if (move.cellIdx === 4) priority += 50;
-      if ([0, 2, 6, 8].includes(move.cellIdx)) priority += 30;
+      // Position bonuses
+      if (move.cellIdx === 4) priority += 60;
+      if ([0, 2, 6, 8].includes(move.cellIdx)) priority += 35;
+      
+      // Board importance
+      priority += (BOARD_IMPORTANCE[move.boardIdx] || 1) * 30;
       
       return { move, priority };
     }).sort((a, b) => b.priority - a.priority).map(item => item.move);
@@ -308,10 +443,21 @@ const UltimateTicTacToe = () => {
         }
       }
 
+      // Occasional mistakes for fairness (but smarter selection)
       if (Math.random() < aiMistakeRate && moveScores.length > 1) {
         moveScores.sort((a, b) => b.score - a.score);
-        const suboptimalIndex = Math.min(1 + Math.floor(Math.random() * 2), moveScores.length - 1);
-        return moveScores[suboptimalIndex].move;
+        
+        // Don't make a "mistake" that loses the game or a critical board
+        const safeMistakes = moveScores.slice(1).filter(ms => {
+          const { newBigBoard } = applyMoveToState(boards, bigBoard, ms.move, 'O');
+          // Don't pick moves that are drastically worse
+          return ms.score > bestScore - 500;
+        });
+        
+        if (safeMistakes.length > 0) {
+          const mistakeIndex = Math.floor(Math.random() * Math.min(2, safeMistakes.length));
+          return safeMistakes[mistakeIndex].move;
+        }
       }
 
       return bestMove;
@@ -324,9 +470,11 @@ const UltimateTicTacToe = () => {
 
   const adjustDifficulty = (playerWon) => {
     if (playerWon) {
-      setAiMistakeRate(prev => Math.max(0.02, prev - 0.03));
+      // Player won - make AI slightly harder
+      setAiMistakeRate(prev => Math.max(0.02, prev - 0.02));
     } else {
-      setAiMistakeRate(prev => Math.min(0.25, prev + 0.02));
+      // AI won - make AI slightly easier
+      setAiMistakeRate(prev => Math.min(0.20, prev + 0.015));
     }
   };
 
@@ -520,7 +668,6 @@ const UltimateTicTacToe = () => {
 
   const handlePlayClick = () => {
     setShowPlayButton(false);
-    // Try to play the video
     const iframe = document.getElementById('rickroll-iframe');
     if (iframe && iframe.contentWindow) {
       iframe.contentWindow.postMessage('{"event":"command","func":"playVideo","args":""}', '*');
