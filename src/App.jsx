@@ -255,7 +255,15 @@ const UltimateTicTacToe = () => {
       newBigBoard[move.boardIdx] = 'draw';
     }
 
-    const nextBoard = newBigBoard[move.cellIdx] === null ? move.cellIdx : null;
+    // Random next board for AI simulation too (fairness)
+    const availableBoards = newBigBoard
+      .map((val, idx) => val === null ? idx : null)
+      .filter(idx => idx !== null);
+    
+    let nextBoard = null;
+    if (availableBoards.length > 0 && Math.random() < 0.7) {
+      nextBoard = availableBoards[Math.floor(Math.random() * availableBoards.length)];
+    }
     
     return { newBoards, newBigBoard, nextBoard };
   };
@@ -516,8 +524,9 @@ const UltimateTicTacToe = () => {
       });
 
       const smallWinner = checkWinner(newBoards[boardIdx]);
+      let newBigBoard = bigBoard;
       if (smallWinner) {
-        const newBigBoard = [...bigBoard];
+        newBigBoard = [...bigBoard];
         newBigBoard[boardIdx] = smallWinner === 'draw' ? 'draw' : smallWinner;
         setBigBoard(newBigBoard);
 
@@ -528,7 +537,20 @@ const UltimateTicTacToe = () => {
         });
       }
 
-      const nextBoard = bigBoard[cellIdx] === null ? cellIdx : null;
+      // RANDOM NEXT BOARD - Fair for both players!
+      // Pick a random available board instead of cell-based selection
+      const availableBoards = newBigBoard
+        .map((val, idx) => val === null ? idx : null)
+        .filter(idx => idx !== null);
+      
+      let nextBoard = null;
+      if (availableBoards.length > 0) {
+        // 70% chance: random board, 30% chance: free choice (any board)
+        if (Math.random() < 0.7) {
+          nextBoard = availableBoards[Math.floor(Math.random() * availableBoards.length)];
+        }
+        // else nextBoard stays null = free choice
+      }
       setActiveBoard(nextBoard);
       setCurrentPlayer(currentPlayer === 'X' ? 'O' : 'X');
     } catch (error) {
