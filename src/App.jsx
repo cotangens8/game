@@ -65,6 +65,28 @@ const UltimateTicTacToe = () => {
   const [sessionStartTime] = useState(Date.now());
   const [gamesPlayed, setGamesPlayed] = useState(0);
   const [aiMistakeRate, setAiMistakeRate] = useState(0.10);
+  const [hasError, setHasError] = useState(false);
+
+  // Error boundary effect
+  useEffect(() => {
+    const errorHandler = (error, errorInfo) => {
+      setHasError(true);
+      posthog?.capture?.('react_error', {
+        error_message: error.toString(),
+        error_stack: error.stack,
+        component_stack: errorInfo?.componentStack,
+        page_url: window.location.href
+      });
+    };
+
+    window.addEventListener('reactError', (event) => {
+      errorHandler(event.detail.error, event.detail.errorInfo);
+    });
+
+    return () => {
+      window.removeEventListener('reactError', errorHandler);
+    };
+  }, []);
 
   const winCombos = [
     [0, 1, 2], [3, 4, 5], [6, 7, 8],
@@ -275,35 +297,51 @@ const UltimateTicTacToe = () => {
 
   // Get best AI move
   const getBestAiMove = () => {
-    const moves = getValidMoves(boards, bigBoard, activeBoard);
-    if (moves.length === 0) return null;
+    try {
+      const moves = getValidMoves(boards, bigBoard, activeBoard);
+      if (moves.length === 0) return null;
 
-    const depth = 4; // Medium difficulty
-    const orderedMoves = orderMoves(moves, boards, bigBoard, 'O');
-    
-    let bestMove = orderedMoves[0];
-    let bestScore = -Infinity;
-    const moveScores = [];
-
-    for (let move of orderedMoves) {
-      const { newBoards, newBigBoard, nextBoard } = applyMoveToState(boards, bigBoard, move, 'O');
-      const score = minimax(newBoards, newBigBoard, nextBoard, depth - 1, false, -Infinity, Infinity, 'O');
-      moveScores.push({ move, score });
+      const depth = 4; // Medium difficulty
+      const orderedMoves = orderMoves(moves, boards, bigBoard, 'O');
       
-      if (score > bestScore) {
-        bestScore = score;
-        bestMove = move;
+      let bestMove = orderedMoves[0];
+      let bestScore = -Infinity;
+      const moveScores = [];
+
+      for (let move of orderedMoves) {
+        const { newBoards, newBigBoard, nextBoard } = applyMoveToState(boards, bigBoard, move, 'O');
+        const score = minimax(newBoards, newBigBoard, nextBoard, depth - 1, false, -Infinity, Infinity, 'O');
+        moveScores.push({ move, score });
+        
+        if (score > bestScore) {
+          bestScore = score;
+          bestMove = move;
+        }
       }
-    }
 
-    // Adaptive difficulty - sometimes pick suboptimal move
-    if (Math.random() < aiMistakeRate && moveScores.length > 1) {
-      moveScores.sort((a, b) => b.score - a.score);
-      const suboptimalIndex = Math.min(1 + Math.floor(Math.random() * 2), moveScores.length - 1);
-      return moveScores[suboptimalIndex].move;
-    }
+      // Adaptive difficulty - sometimes pick suboptimal move
+      if (Math.random() < aiMistakeRate && moveScores.length > 1) {
+        moveScores.sort((a, b) => b.score - a.score);
+        const suboptimalIndex = Math.min(1 + Math.floor(Math.random() * 2), moveScores.length - 1);
+        return moveScores[suboptimalIndex].move;
+      }
 
-    return bestMove;
+      return bestMove;
+    } catch (error) {
+      console.error('Error in getBestAiMove:', error);
+      posthog?.capture?.('ai_error', {
+        error_message: error.message,
+        error_stack: error.stack,
+        game_state: {
+          activeBoard,
+          moveCount,
+          aiMistakeRate
+        }
+      });
+      // Fallback to random valid move
+      const moves = getValidMoves(boards, bigBoard, activeBoard);
+      return moves[Math.floor(Math.random() * moves.length)] || null;
+    }
   };
 
   // Adjust AI difficulty based on results
@@ -373,7 +411,7 @@ const UltimateTicTacToe = () => {
 
       let aiVariant = 'default';
       try {
-        aiVariant = posthog?.getFeatureFlag?.('ai-thinking-time') || 'default';
+        aiVariant = posthog?.getFeatureFlag?.('ai-speed-affecting-total-session-duration') || 'default';
       } catch (e) {}
       
       posthog?.capture?.('game_completed', {
@@ -384,7 +422,7 @@ const UltimateTicTacToe = () => {
         total_games_played: gamesPlayed + 1,
         win_streak: bigWinner === 'X' ? newStats.wins : 0,
         board_positions_used: bigBoard.filter(b => b !== null).length,
-        $feature_flag: 'ai-thinking-time',
+        $feature_flag: 'ai-speed-affecting-total-session-duration',
         $feature_flag_response: aiVariant,
         ai_thinking_variant: aiVariant,
         ai_mistake_rate: aiMistakeRate
@@ -424,41 +462,57 @@ const UltimateTicTacToe = () => {
   }, [currentPlayer, gameOver]);
 
   const handleMove = (boardIdx, cellIdx) => {
-    if (gameOver || bigBoard[boardIdx] !== null || boards[boardIdx][cellIdx] !== null) return;
-    
-    if (activeBoard !== null && activeBoard !== boardIdx && bigBoard[activeBoard] === null) return;
+    try {
+      if (gameOver || bigBoard[boardIdx] !== null || boards[boardIdx][cellIdx] !== null) return;
+      
+      if (activeBoard !== null && activeBoard !== boardIdx && bigBoard[activeBoard] === null) return;
 
-    const newBoards = boards.map((board, i) => 
-      i === boardIdx ? board.map((cell, j) => j === cellIdx ? currentPlayer : cell) : board
-    );
-    setBoards(newBoards);
-    setLastMove({ boardIdx, cellIdx });
-    setMoveCount(prev => prev + 1);
+      const newBoards = boards.map((board, i) => 
+        i === boardIdx ? board.map((cell, j) => j === cellIdx ? currentPlayer : cell) : board
+      );
+      setBoards(newBoards);
+      setLastMove({ boardIdx, cellIdx });
+      setMoveCount(prev => prev + 1);
 
-    posthog?.capture?.('move_made', {
-      player: currentPlayer,
-      board_index: boardIdx,
-      cell_index: cellIdx,
-      move_number: moveCount + 1,
-      board_was_active: activeBoard === boardIdx || activeBoard === null
-    });
-
-    const smallWinner = checkWinner(newBoards[boardIdx]);
-    if (smallWinner) {
-      const newBigBoard = [...bigBoard];
-      newBigBoard[boardIdx] = smallWinner === 'draw' ? 'draw' : smallWinner;
-      setBigBoard(newBigBoard);
-
-      posthog?.capture?.('board_completed', {
+      posthog?.capture?.('move_made', {
+        player: currentPlayer,
         board_index: boardIdx,
-        winner: smallWinner,
-        moves_to_complete: moveCount + 1
+        cell_index: cellIdx,
+        move_number: moveCount + 1,
+        board_was_active: activeBoard === boardIdx || activeBoard === null
+      });
+
+      const smallWinner = checkWinner(newBoards[boardIdx]);
+      if (smallWinner) {
+        const newBigBoard = [...bigBoard];
+        newBigBoard[boardIdx] = smallWinner === 'draw' ? 'draw' : smallWinner;
+        setBigBoard(newBigBoard);
+
+        posthog?.capture?.('board_completed', {
+          board_index: boardIdx,
+          winner: smallWinner,
+          moves_to_complete: moveCount + 1
+        });
+      }
+
+      const nextBoard = bigBoard[cellIdx] === null ? cellIdx : null;
+      setActiveBoard(nextBoard);
+      setCurrentPlayer(currentPlayer === 'X' ? 'O' : 'X');
+    } catch (error) {
+      console.error('Error in handleMove:', error);
+      posthog?.capture?.('game_error', {
+        error_type: 'handleMove',
+        error_message: error.message,
+        error_stack: error.stack,
+        board_index: boardIdx,
+        cell_index: cellIdx,
+        game_state: {
+          currentPlayer,
+          moveCount,
+          activeBoard
+        }
       });
     }
-
-    const nextBoard = bigBoard[cellIdx] === null ? cellIdx : null;
-    setActiveBoard(nextBoard);
-    setCurrentPlayer(currentPlayer === 'X' ? 'O' : 'X');
   };
 
   const resetGame = () => {
@@ -576,6 +630,29 @@ const UltimateTicTacToe = () => {
           allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
           allowFullScreen
         ></iframe>
+      </div>
+    );
+  }
+
+  if (hasError) {
+    return (
+      <div className="game-container">
+        <div className="header">
+          <h1>Oops! Something went wrong</h1>
+          <p className="subtitle">The game encountered an error. We've been notified!</p>
+        </div>
+        <div className="controls">
+          <button 
+            onClick={() => {
+              setHasError(false);
+              resetGame();
+            }} 
+            className="btn btn-secondary"
+          >
+            <span className="btn-icon">↻</span>
+            Try Again
+          </button>
+        </div>
       </div>
     );
   }
