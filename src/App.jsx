@@ -4,21 +4,33 @@ import './App.css';
 
 // Initialize PostHog once
 if (typeof window !== 'undefined' && !posthog.__loaded) {
-  posthog.init('phc_fwRv0kOBY00zAgocCCyeJZgAxXcPSV64OzuOHenC2jd', {
-    api_host: 'https://eu.i.posthog.com',
-    ui_host: 'https://eu.posthog.com',
-    person_profiles: 'identified_only',
-    autocapture: false,
-    capture_pageview: true,
-    cross_subdomain_cookie: false,
-    secure_cookie: false,
-    persistence: 'localStorage',
-    loaded: (ph) => {
-      console.log('PostHog initialized ✓');
-    },
-    disable_session_recording: true,
-    disable_surveys: true,
-  });
+  console.log('Attempting to initialize PostHog...');
+  try {
+    posthog.init('phc_fwRv0kOBY00zAgocCCyeJZgAxXcPSV64OzuOHenC2jd', {
+      api_host: 'https://eu.i.posthog.com',
+      ui_host: 'https://eu.posthog.com',
+      person_profiles: 'identified_only',
+      autocapture: false,
+      capture_pageview: true,
+      cross_subdomain_cookie: false,
+      secure_cookie: window.location.protocol === 'https:',
+      persistence: 'localStorage',
+      loaded: (ph) => {
+        console.log('PostHog initialized successfully ✓');
+        console.log('PostHog instance:', ph);
+        // Test feature flag immediately
+        setTimeout(() => {
+          const flagValue = ph.getFeatureFlagPayload('ai-thinking-time');
+          console.log('Feature flag value:', flagValue);
+        }, 1000);
+      },
+      disable_session_recording: true,
+      disable_surveys: true,
+    });
+    console.log('PostHog init called');
+  } catch (error) {
+    console.error('PostHog initialization error:', error);
+  }
 }
 
 // AI Evaluation Weights
@@ -303,10 +315,22 @@ const UltimateTicTacToe = () => {
     }
   };
 
-  // Track session on mount
+  // Track session on mount and explicitly fetch feature flags
   useEffect(() => {
     const userId = posthog?.get_distinct_id?.();
     posthog?.identify?.(userId);
+    
+    // Explicitly call feature flags to trigger tracking
+    posthog?.onFeatureFlags?.(() => {
+      const flagValue = posthog?.getFeatureFlag?.('ai-thinking-time');
+      console.log('Feature flag loaded:', flagValue);
+      
+      // Track that we checked the flag
+      posthog?.capture?.('$feature_flag_called', {
+        $feature_flag: 'ai-thinking-time',
+        $feature_flag_response: flagValue
+      });
+    });
     
     posthog?.capture?.('session_started', {
       timestamp: new Date().toISOString()
@@ -349,7 +373,7 @@ const UltimateTicTacToe = () => {
 
       let aiVariant = 'default';
       try {
-        aiVariant = posthog?.getFeatureFlagPayload?.('ai-thinking-time') || 'default';
+        aiVariant = posthog?.getFeatureFlag?.('ai-thinking-time') || 'default';
       } catch (e) {}
       
       posthog?.capture?.('game_completed', {
@@ -360,6 +384,8 @@ const UltimateTicTacToe = () => {
         total_games_played: gamesPlayed + 1,
         win_streak: bigWinner === 'X' ? newStats.wins : 0,
         board_positions_used: bigBoard.filter(b => b !== null).length,
+        $feature_flag: 'ai-thinking-time',
+        $feature_flag_response: aiVariant,
         ai_thinking_variant: aiVariant,
         ai_mistake_rate: aiMistakeRate
       });
@@ -374,11 +400,18 @@ const UltimateTicTacToe = () => {
       
       let aiThinkingTime = 600;
       try {
-        const flagValue = posthog?.getFeatureFlagPayload?.('ai-thinking-time');
-        if (flagValue) {
-          aiThinkingTime = Number(flagValue);
+        // Use getFeatureFlag instead of getFeatureFlagPayload for better tracking
+        const flagValue = posthog?.getFeatureFlag?.('ai-thinking-time');
+        console.log('AI thinking flag value:', flagValue);
+        
+        if (flagValue === 'fast') {
+          aiThinkingTime = 300;
+        } else if (flagValue === 'slow') {
+          aiThinkingTime = 900;
         }
-      } catch (e) {}
+      } catch (e) {
+        console.log('Feature flag error:', e);
+      }
       
       setTimeout(() => {
         const move = getBestAiMove();
