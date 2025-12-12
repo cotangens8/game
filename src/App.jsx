@@ -101,25 +101,41 @@ const BOARD_IMPORTANCE = {
   1: 1.0, 3: 1.0, 5: 1.0, 7: 1.0       // Edges
 };
 
+// Load saved game state from localStorage
+const loadGameState = () => {
+  try {
+    const saved = localStorage.getItem('ultimateTicTacToe');
+    if (saved) {
+      return JSON.parse(saved);
+    }
+  } catch (e) {
+    console.log('Could not load saved game:', e);
+  }
+  return null;
+};
+
 const UltimateTicTacToe = () => {
-  const [boards, setBoards] = useState(Array(9).fill(null).map(() => Array(9).fill(null)));
-  const [bigBoard, setBigBoard] = useState(Array(9).fill(null));
-  const [currentPlayer, setCurrentPlayer] = useState('X');
-  const [activeBoard, setActiveBoard] = useState(null);
-  const [gameOver, setGameOver] = useState(false);
-  const [winner, setWinner] = useState(null);
-  const [stats, setStats] = useState({ wins: 0, losses: 0, draws: 0 });
-  const [moveCount, setMoveCount] = useState(0);
+  const savedState = loadGameState();
+  
+  const [boards, setBoards] = useState(savedState?.boards || Array(9).fill(null).map(() => Array(9).fill(null)));
+  const [bigBoard, setBigBoard] = useState(savedState?.bigBoard || Array(9).fill(null));
+  const [currentPlayer, setCurrentPlayer] = useState(savedState?.currentPlayer || 'X');
+  const [activeBoard, setActiveBoard] = useState(savedState?.activeBoard ?? null);
+  const [gameOver, setGameOver] = useState(savedState?.gameOver || false);
+  const [winner, setWinner] = useState(savedState?.winner || null);
+  const [stats, setStats] = useState(savedState?.stats || { wins: 0, losses: 0, draws: 0 });
+  const [moveCount, setMoveCount] = useState(savedState?.moveCount || 0);
   const [isAiThinking, setIsAiThinking] = useState(false);
-  const [lastMove, setLastMove] = useState(null);
+  const [lastMove, setLastMove] = useState(savedState?.lastMove || null);
   const [showRickRoll, setShowRickRoll] = useState(false);
-  const [gameStartTime, setGameStartTime] = useState(Date.now());
+  const [gameStartTime, setGameStartTime] = useState(savedState?.gameStartTime || Date.now());
   const [rickRollStartTime, setRickRollStartTime] = useState(null);
   const [sessionStartTime] = useState(Date.now());
-  const [gamesPlayed, setGamesPlayed] = useState(0);
-  const [aiMistakeRate, setAiMistakeRate] = useState(0.15); // Higher base = easier
+  const [gamesPlayed, setGamesPlayed] = useState(savedState?.gamesPlayed || 0);
+  const [aiMistakeRate, setAiMistakeRate] = useState(savedState?.aiMistakeRate || 0.15);
   const [hasError, setHasError] = useState(false);
   const [showPlayButton, setShowPlayButton] = useState(true);
+  const [justWonBoard, setJustWonBoard] = useState(null); // Track which board just got won for animation
 
   useEffect(() => {
     const tag = document.createElement('script');
@@ -127,6 +143,37 @@ const UltimateTicTacToe = () => {
     const firstScriptTag = document.getElementsByTagName('script')[0];
     firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
   }, []);
+
+  // Save game state to localStorage whenever relevant state changes
+  useEffect(() => {
+    const gameState = {
+      boards,
+      bigBoard,
+      currentPlayer,
+      activeBoard,
+      gameOver,
+      winner,
+      stats,
+      moveCount,
+      lastMove,
+      gameStartTime,
+      gamesPlayed,
+      aiMistakeRate
+    };
+    try {
+      localStorage.setItem('ultimateTicTacToe', JSON.stringify(gameState));
+    } catch (e) {
+      console.log('Could not save game state:', e);
+    }
+  }, [boards, bigBoard, currentPlayer, activeBoard, gameOver, winner, stats, moveCount, lastMove, gamesPlayed, aiMistakeRate]);
+
+  // Clear justWonBoard animation after delay
+  useEffect(() => {
+    if (justWonBoard !== null) {
+      const timer = setTimeout(() => setJustWonBoard(null), 400);
+      return () => clearTimeout(timer);
+    }
+  }, [justWonBoard]);
 
   const winCombos = [
     [0, 1, 2], [3, 4, 5], [6, 7, 8],
@@ -529,6 +576,11 @@ const UltimateTicTacToe = () => {
         newBigBoard = [...bigBoard];
         newBigBoard[boardIdx] = smallWinner === 'draw' ? 'draw' : smallWinner;
         setBigBoard(newBigBoard);
+        
+        // Trigger win animation
+        if (smallWinner !== 'draw') {
+          setJustWonBoard(boardIdx);
+        }
 
         posthog?.capture?.('board_completed', {
           board_index: boardIdx,
@@ -583,6 +635,7 @@ const UltimateTicTacToe = () => {
     setWinner(null);
     setMoveCount(0);
     setLastMove(null);
+    setJustWonBoard(null);
     setGameStartTime(Date.now());
 
     posthog?.capture?.('game_started', {
@@ -590,6 +643,19 @@ const UltimateTicTacToe = () => {
       current_win_streak: stats.wins,
       ai_mistake_rate: aiMistakeRate
     });
+  };
+  
+  // Full reset including stats
+  const resetAllStats = () => {
+    resetGame();
+    setStats({ wins: 0, losses: 0, draws: 0 });
+    setGamesPlayed(0);
+    setAiMistakeRate(0.15);
+    try {
+      localStorage.removeItem('ultimateTicTacToe');
+    } catch (e) {
+      console.log('Could not clear localStorage:', e);
+    }
   };
 
   const handleRickRollClick = () => {
@@ -625,11 +691,12 @@ const UltimateTicTacToe = () => {
     const isActive = activeBoard === null ? bigBoard[boardIdx] === null : activeBoard === boardIdx;
     const board = boards[boardIdx];
     const boardWinner = bigBoard[boardIdx];
+    const isJustWon = justWonBoard === boardIdx;
     
     return (
       <div 
         key={boardIdx}
-        className={`small-board ${isActive && !gameOver ? 'active' : ''} ${boardWinner ? 'won' : ''}`}
+        className={`small-board ${isActive && !gameOver ? 'active' : ''} ${boardWinner ? 'won' : ''} ${isJustWon ? 'just-won' : ''}`}
       >
         {boardWinner && boardWinner !== 'draw' && (
           <div className="board-winner-overlay">

@@ -125,6 +125,35 @@ h1 {
   opacity: 0.6;
 }
 
+/* Board Win Animation - subtle pulse/shake */
+.small-board.just-won {
+  animation: boardWin 0.4s ease-out;
+}
+
+@keyframes boardWin {
+  0% {
+    transform: scale(1);
+  }
+  15% {
+    transform: scale(1.05);
+  }
+  30% {
+    transform: scale(0.97);
+  }
+  45% {
+    transform: scale(1.02);
+  }
+  60% {
+    transform: scale(0.99);
+  }
+  75% {
+    transform: scale(1.01);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
 /* Board Winner Overlay */
 .board-winner-overlay {
   position: absolute;
@@ -138,12 +167,54 @@ h1 {
   pointer-events: none;
 }
 
+/* Winner symbol animation */
+.small-board.just-won .board-winner-overlay {
+  animation: overlayFadeIn 0.3s ease-out;
+}
+
+@keyframes overlayFadeIn {
+  0% {
+    opacity: 0;
+    transform: scale(0.8);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
 .winner-x {
   position: relative;
   width: 50%;
   height: 50%;
   max-width: 3rem;
   max-height: 3rem;
+}
+
+.small-board.just-won .winner-x .x-line {
+  animation: xLineGrow 0.3s ease-out;
+}
+
+@keyframes xLineGrow {
+  0% {
+    transform: translate(-50%, -50%) rotate(45deg) scaleX(0);
+  }
+  100% {
+    transform: translate(-50%, -50%) rotate(45deg) scaleX(1);
+  }
+}
+
+.small-board.just-won .winner-x .x-line-2 {
+  animation: xLineGrow2 0.3s ease-out;
+}
+
+@keyframes xLineGrow2 {
+  0% {
+    transform: translate(-50%, -50%) rotate(-45deg) scaleX(0);
+  }
+  100% {
+    transform: translate(-50%, -50%) rotate(-45deg) scaleX(1);
+  }
 }
 
 .x-line {
@@ -172,6 +243,24 @@ h1 {
   max-height: 3rem;
   border: 3px solid #0070F3;
   border-radius: 50%;
+}
+
+.small-board.just-won .winner-o {
+  animation: oGrow 0.3s ease-out;
+}
+
+@keyframes oGrow {
+  0% {
+    transform: scale(0);
+    opacity: 0;
+  }
+  50% {
+    transform: scale(1.1);
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 
 /* Cell Grid - 3x3 cells in each small board */
